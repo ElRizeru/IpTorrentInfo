@@ -3,7 +3,6 @@ from requests.exceptions import RequestException
 from bs4 import BeautifulSoup
 import pandas as pd
 from itertools import product
-import os
 
 HTML = 'iplist.html'
 HOST = 'https://iknowwhatyoudownload.com'
@@ -22,6 +21,15 @@ def get_html(url):
         print('An error occurred during the HTTP request:', e)
         return None
 
+def get_ips(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    div_elements = soup.select('div.padding-block')
+    for div_element in div_elements:
+        ip_links = div_element.select('a[href^="/en/peer/?ip="]')
+        ip_addresses = [element.text for element in ip_links]
+        if ip_addresses:
+            return ip_addresses
+            
 
 def get_content(html, ip_address):
     soup = BeautifulSoup(html, 'html.parser')
@@ -37,13 +45,16 @@ def get_content(html, ip_address):
             date_element = item.select_one('td.date-column')
 
             if all([title_element, category_element, link_element, size_element, date_element]):
+                ext_data_element = soup.select('span.label.label-primary')
+                ext_data = [element.get_text(strip=True) for element in ext_data_element]
                 data = {
                     'ip': ip_address,
                     'title': title_element.get_text(strip=True),
                     'category': category_element.get_text(strip=True),
                     'link_torrent': HOST + link_element.get('href'),
                     'size': size_element.get_text(strip=True),
-                    'date': date_element.get_text(strip=True)
+                    'date': date_element.get_text(strip=True),
+                    'ext_data': ext_data
                 }
                 extracted_data.append(data)
         except Exception as e:
@@ -56,11 +67,11 @@ def save_doc(items, path):
     df_data = [
         [
             f"<span style='color:red'>{item[field]}</span>" if item['category'] == 'XXX' else item[field]
-            for field in ['ip', 'title', 'category', 'link_torrent', 'size', 'date']
+            for field in ['ip', 'title', 'category', 'link_torrent', 'size', 'date', 'ext_data']
         ]
         for item in items
     ]
-    df_columns = ['IP', 'Name', 'Category', 'Torrent link', 'Size', 'Date']
+    df_columns = ['IP', 'Name', 'Category', 'Torrent link', 'Size', 'Date', 'Ext. data']
     df = pd.DataFrame(df_data, columns=df_columns)
 
     try:
@@ -68,6 +79,7 @@ def save_doc(items, path):
             file.write(df.to_html(index=False, escape=False))
     except Exception as e:
         print('Error occurred while saving the table:', e)
+
 
 
 def is_valid_mask(mask_choice):
@@ -90,21 +102,58 @@ def is_valid_ip_address(ip_address):
 
 
 def generate_ip_addresses(mask):
-    ip_addresses = []
+    parts = mask.split('.')
+    indices = [i for i, part in enumerate(parts) if '#' in part]
+    current_digits = [0] * len(indices)
+    ip_info = []
 
-    mask_parts = mask.split('.')
+    while True:
+        ip_parts = parts[:]
+        for index, digit in zip(indices, current_digits):
+            ip_parts[index] = str(digit)
+        ip_parts[-1] = '0'
+        ip_address = '.'.join(ip_parts)
+        html = get_html(URL)
 
-    possible_values = []
-    for part in mask_parts:
-        if part == '#':
-            possible_values.append(list(range(256)))
+        if not html:
+            print('iknowwhatyoudownload.com is not currently available')
+            break
+
+        print("This IP is checked:", ip_address)
+        html = get_html(URL + f'?ip={ip_address}')
+        if html:
+            ip_info.extend(get_content(html, ip_address))
+            save_doc(ip_info, HTML)
+
+            ips = get_ips(html)
+            while True:
+                try:
+                    ip = ips[-1]
+                    html = get_html(URL + f'?ip={ip}')
+                    ips_temp = get_ips(html)
+                    new_ips = [ip for ip in ips_temp if ip not in ips]
+                    if not new_ips:
+                        break
+                    ips.extend(new_ips)
+                except:
+                    break
+            if ips:
+                for ip in ips:
+                    html = get_html(URL + f'?ip={ip}')
+                    print("This IP is checked:", ip)
+                    if html:
+                        ip_info.extend(get_content(html, ip))
+            save_doc(ip_info, HTML)
+
+        for i in range(len(current_digits) - 2, -1, -1):
+            current_digits[i] += 1
+            if current_digits[i] <= 255:
+                break
+            else:
+                current_digits[i] = 0
         else:
-            possible_values.append([int(part)])
+            break
 
-    for values in product(*possible_values):
-        ip_addresses.append('.'.join(map(str, values)))
-
-    return ip_addresses
 
 
 def check_single_ip():
@@ -129,19 +178,7 @@ def check_ip_with_mask():
         print('Invalid mask format. Please enter a valid mask.')
         mask_choice = input('Specify the IP address mask (e.g., 1.25.#.#): ')
 
-    ip_list = generate_ip_addresses(mask_choice)
-    ip_info = []
-
-    html = get_html(URL)
-    if html:
-        for full_ip in ip_list:
-            print("This IP is checked:", full_ip)
-            html = get_html(URL + f'?ip={full_ip}')
-            if html:
-                ip_info.extend(get_content(html, full_ip))
-                save_doc(ip_info, HTML)
-    else:
-        print('iknowwhatyoudownload.com is not currently available')
+    generate_ip_addresses(mask_choice)
 
 
 def main():
